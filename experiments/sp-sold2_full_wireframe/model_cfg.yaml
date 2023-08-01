@@ -1,0 +1,47 @@
+backbone: superpoint
+backbone_cfg:
+  depth: 4
+  input_channel: 1
+  num_blocks: 1
+  num_classes: 5
+  num_stacks: 2
+descriptor_decoder: superpoint_descriptor
+descriptor_decoder_cfg: null
+descriptor_loss_cfg:
+  dist_threshold: 8
+  grid_size: 4
+  margin: 1
+  policy: dynamic
+descriptor_loss_func: regular_sampling
+detection_thresh: 0.0153846
+disp_freq: 100
+epochs: 130
+grid_size: 8
+heatmap_decoder: pixel_shuffle
+heatmap_decoder_cfg: null
+heatmap_loss_cfg:
+  policy: dynamic
+heatmap_loss_func: cross_entropy
+junc_decoder_cfg: null
+junction_decoder: superpoint_decoder
+junction_loss_cfg:
+  policy: dynamic
+junction_loss_func: superpoint
+keep_border_valid: true
+learning_rate: 0.0005
+max_ckpt: 130
+model_architecture: simple
+model_name: superpoint_simple
+prob_thresh: 0.5
+summary_freq: 1
+test:
+  batch_size: 12
+  num_workers: 8
+train:
+  batch_size: 12
+  num_workers: 8
+w_desc: 0.0
+w_heatmap: 0.0
+w_heatmap_class: 1
+w_junc: 0.0
+weighting_policy: dynamic

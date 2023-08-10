@@ -237,6 +237,10 @@ def train_single_epoch(model, model_cfg, optimizer, loss_func, metric_func,
             valid_mask2 = data["target_valid_mask"].cuda()
             input_images = data["ref_image"].cuda()
             input_images2 = data["target_image"].cuda()
+            cells = data["ref_cells"].cuda()
+            cells2 = data["target_cells"].cuda()
+            cells_mask = data["ref_cells_mask"].cuda()
+            cells_mask2 = data["target_cells_mask"].cuda()
 
             # Run the forward pass
             outputs = model(input_images)
@@ -248,7 +252,7 @@ def train_single_epoch(model, model_cfg, optimizer, loss_func, metric_func,
                 junc_map, junc_map2, outputs["heatmap"], outputs2["heatmap"],
                 heatmap, heatmap2, line_points, line_points2,
                 line_indices, outputs['descriptors'], outputs2['descriptors'],
-                epoch, valid_mask, valid_mask2)
+                epoch, valid_mask, valid_mask2, cells, cells2, cells_mask, cells_mask2)
         else:
             junc_map = data["junction_map"].cuda()
             heatmap = data["heatmap"].cuda()
@@ -314,6 +318,8 @@ def train_single_epoch(model, model_cfg, optimizer, loss_func, metric_func,
                 "total_loss": total_loss.item()}
             if compute_descriptors:
                 descriptor_loss = losses["descriptor_loss"].item()
+                line_descriptor_loss = losses["line_descriptor_loss"].item()
+                point_descriptor_loss = losses["point_descriptor_loss"]
                 loss_dict["descriptor_loss"] = losses["descriptor_loss"].item()
 
             average_meter.update(metric_func, loss_dict, num_samples=junc_map.shape[0])
@@ -325,11 +331,11 @@ def train_single_epoch(model, model_cfg, optimizer, loss_func, metric_func,
             # Get gpu memory usage in GB
             gpu_mem_usage = torch.cuda.max_memory_allocated() / (1024 ** 3)
             if compute_descriptors:
-                print("Epoch [%d / %d] Iter [%d / %d] loss=%.4f (%.4f), junc_loss=%.4f (%.4f), heatmap_loss=%.4f (%.4f), descriptor_loss=%.4f (%.4f), gpu_mem=%.4fGB"
+                print("Epoch [%d / %d] Iter [%d / %d] loss=%.4f (%.4f), junc_loss=%.4f (%.4f), heatmap_loss=%.4f (%.4f), descriptor_loss=%.4f(line)+%.4f(pts) (%.4f), gpu_mem=%.4fGB"
                       % (epoch, model_cfg["epochs"], idx, len(train_loader),
                          total_loss.item(), average["total_loss"], junc_loss,
                          average["junc_loss"], heatmap_loss,
-                         average["heatmap_loss"], descriptor_loss,
+                         average["heatmap_loss"], line_descriptor_loss, point_descriptor_loss,
                          average["descriptor_loss"], gpu_mem_usage))
             else:
                 print("Epoch [%d / %d] Iter [%d / %d] loss=%.4f (%.4f), junc_loss=%.4f (%.4f), heatmap_loss=%.4f (%.4f), gpu_mem=%.4fGB"
@@ -366,6 +372,8 @@ def train_single_epoch(model, model_cfg, optimizer, loss_func, metric_func,
             # Add descriptor terms
             if compute_descriptors:
                 scalar_summaries["descriptor_loss"] = descriptor_loss
+                scalar_summaries["line_descriptor_loss"] = line_descriptor_loss
+                scalar_summaries["point_descriptor_loss"] = point_descriptor_loss
                 scalar_summaries["w_desc"] = losses["w_desc"]
 
             # Add weighting terms (even for static terms)
@@ -378,7 +386,7 @@ def train_single_epoch(model, model_cfg, optimizer, loss_func, metric_func,
                                 > model_cfg["detection_thresh"])
             junc_pred_nms_binary = (junc_np["junc_pred_nms"][:num_images, ...]
                                     > model_cfg["detection_thresh"])
-            print("input_image_shape", input_images.shape, input_images.cpu().numpy()[:num_images, ...].shape)
+            # print("input_image_shape", input_images.shape, input_images.cpu().numpy()[:num_images, ...].shape)
             image_summaries = {
                 "image": input_images.cpu().numpy()[:num_images, ...],
                 "valid_mask": valid_mask_np[:num_images, ...],
@@ -420,6 +428,10 @@ def validate(model, model_cfg, loss_func, metric_func, val_loader, writer, epoch
             valid_mask2 = data["target_valid_mask"].cuda()
             input_images = data["ref_image"].cuda()
             input_images2 = data["target_image"].cuda()
+            cells = data["ref_cells"].cuda()
+            cells2 = data["target_cells"].cuda()
+            cells_mask = data["ref_cells_mask"].cuda()
+            cells_mask2 = data["target_cells_mask"].cuda()
 
             # Run the forward pass
             with torch.no_grad():
@@ -432,7 +444,7 @@ def validate(model, model_cfg, loss_func, metric_func, val_loader, writer, epoch
                     junc_map, junc_map2, outputs["heatmap"],
                     outputs2["heatmap"], heatmap, heatmap2, line_points,
                     line_points2, line_indices, outputs['descriptors'],
-                    outputs2['descriptors'], epoch, valid_mask, valid_mask2)
+                    outputs2['descriptors'], epoch, valid_mask, valid_mask2, cells, cells2, cells_mask, cells_mask2)
         else:
             junc_map = data["junction_map"].cuda()
             heatmap = data["heatmap"].cuda()
@@ -488,6 +500,8 @@ def validate(model, model_cfg, loss_func, metric_func, val_loader, writer, epoch
             "total_loss": total_loss.item()}
         if compute_descriptors:
             descriptor_loss = losses["descriptor_loss"].item()
+            line_descriptor_loss = losses["line_descriptor_loss"].item()
+            point_descriptor_loss = losses["point_descriptor_loss"].item()
             loss_dict["descriptor_loss"] = losses["descriptor_loss"].item()
         average_meter.update(metric_func, loss_dict, num_samples=junc_map.shape[0])
 
@@ -496,12 +510,12 @@ def validate(model, model_cfg, loss_func, metric_func, val_loader, writer, epoch
             results = metric_func.metric_results
             average = average_meter.average()
             if compute_descriptors:
-                print("Iter [%d / %d] loss=%.4f (%.4f), junc_loss=%.4f (%.4f), heatmap_loss=%.4f (%.4f), descriptor_loss=%.4f (%.4f)"
+                print("Iter [%d / %d] loss=%.4f (%.4f), junc_loss=%.4f (%.4f), heatmap_loss=%.4f (%.4f), descriptor_loss=%.4f(line)+%.4f(pts) (%.4f)"
                       % (idx, len(val_loader),
                          total_loss.item(), average["total_loss"],
                          junc_loss, average["junc_loss"],
-                         heatmap_loss, average["heatmap_loss"],
-                         descriptor_loss, average["descriptor_loss"]))
+                         heatmap_loss, average["heatmap_loss"], line_descriptor_loss, point_descriptor_loss,
+                         average["descriptor_loss"]))
             else:
                 print("Iter [%d / %d] loss=%.4f (%.4f), junc_loss=%.4f (%.4f), heatmap_loss=%.4f (%.4f)"
                       % (idx, len(val_loader),
@@ -573,7 +587,12 @@ def record_train_summaries(writer, global_step, scalars, images):
     # Add descriptor loss
     if "descriptor_loss" in scalars.keys():
         key = "descriptor_loss"
+        key1 = "line_descriptor_loss"
+        key2 = "point_descriptor_loss"
+
         writer.add_scalar("Train_loss/%s"%(key), scalars[key], global_step)
+        writer.add_scalar("Train_loss/%s"%(key1), scalars[key1], global_step)
+        writer.add_scalar("Train_loss/%s"%(key2), scalars[key2], global_step)
         writer.add_scalar("Train_loss_average/%s"%(key), average[key],
                           global_step)
     

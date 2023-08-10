@@ -41,10 +41,10 @@ junction_loss_cfg:
   policy: "dynamic"
 # [Descriptor loss]
 w_desc: 0.
-descriptor_loss_func: "regular_sampling"
+descriptor_loss_func: "pl_sampling" # [regular_sampling, pl_sampling]
 descriptor_loss_cfg:
   dist_threshold: 8
-  grid_size: 4
+  grid_size: 8
   margin: 1
   policy: "dynamic"
 
@@ -52,11 +52,11 @@ descriptor_loss_cfg:
 learning_rate: 0.0005
 epochs: 130
 train:
-  batch_size: 12
-  num_workers: 8
+  batch_size: 4
+  num_workers: 1
 test:
-  batch_size: 12
-  num_workers: 8
+  batch_size: 4
+  num_workers: 1
 disp_freq: 100
-summary_freq: 1
+summary_freq: 100
 max_ckpt: 130

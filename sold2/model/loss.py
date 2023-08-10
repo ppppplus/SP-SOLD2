@@ -121,6 +121,12 @@ def get_descriptor_loss_and_weight(model_cfg, global_w_policy):
             descriptor_loss_cfg["grid_size"],
             descriptor_loss_cfg["dist_threshold"],
             descriptor_loss_cfg["margin"])
+    elif descriptor_loss_name == "pl_sampling":
+        descriptor_loss_func = PLTripletDescriptorLoss(
+            descriptor_loss_cfg["grid_size"],
+            descriptor_loss_cfg["dist_threshold"],
+            descriptor_loss_cfg["margin"]
+        )
     else:
         raise ValueError("[Error] Not supported descriptor loss function.")
 
@@ -244,9 +250,17 @@ class RegularizationLoss(nn.Module):
                 loss += val
         
         return loss
+def grid_ptsdesc(desc, pts, H, W):
+    samp_pts = pts.float().detach()
+    samp_pts[..., 0] = (samp_pts[..., 0] / (float(W)/2.)) - 1.
+    samp_pts[:, 1] = (pts[:, 1] / (float(H)/2.)) - 1.
+    samp_pts = samp_pts.contiguous()
+    samp_pts = samp_pts.view(1, 1, -1, 2)
+    samp_pts = samp_pts.float()
+    desc = F.grid_sample(desc, samp_pts)
+    return desc
 
-def pointdesc_loss(desc_pred1, desc_pred2, mask, mask_valid=None, 
-                    cell_size=8, lamda_d=250, device='cpu', descriptor_dist=4, **config):
+def pointdesc_loss(desc_pred1, desc_pred2, cells1, cells2, grid_size, cells_mask1=None, cells_mask2=None, lamda_d=250):
 
     '''
     Compute descriptor loss from descriptors_warped and given homographies
@@ -271,58 +285,36 @@ def pointdesc_loss(desc_pred1, desc_pred2, mask, mask_valid=None,
     # put to gpu
     # homographies = homographies.to(device)
     # config
-
+    b_size, _, Hc, Wc = desc_pred1.size()
+    n_points = cells_mask1.shape[1]
+    device = desc_pred1.device
     lamda_d = lamda_d # 250
     margin_pos = 1
     margin_neg = 0.2
     batch_size, Hc, Wc = desc_pred1.shape[0], desc_pred1.shape[2], desc_pred1.shape[3]
-    #####
-    # H, W = Hc.numpy().astype(int) * cell_size, Wc.numpy().astype(int) * cell_size
-    # H, W = Hc * cell_size, Wc * cell_size
-    # #####
-    # with torch.no_grad():
-    #     # shape = torch.tensor(list(descriptors.shape[2:]))*torch.tensor([cell_size, cell_size]).type(torch.FloatTensor).to(device)
-    #     shape = torch.tensor([H, W]).type(torch.FloatTensor).to(device)
-    #     # compute the center pixel of every cell in the image
+    H, W = Hc*grid_size, Wc*grid_size
 
-    #     coor_cells = torch.stack(torch.meshgrid(torch.arange(Hc), torch.arange(Wc)), dim=2)
-    #     coor_cells = coor_cells.type(torch.FloatTensor).to(device)
-    #     coor_cells = coor_cells * cell_size + cell_size // 2
-    #     ## coord_cells is now a grid containing the coordinates of the Hc x Wc
-    #     ## center pixels of the 8x8 cells of the image
+    valid_mask1 = cells_mask1.reshape(b_size*Hc*Wc, 1)
+    valid_mask2 = cells_mask2.reshape(b_size*Hc*Wc, 1)
 
-    #     # coor_cells = coor_cells.view([-1, Hc, Wc, 1, 1, 2])
-    #     coor_cells = coor_cells.view([-1, 1, 1, Hc, Wc, 2])  # be careful of the order
-    #     # warped_coor_cells = warp_points(coor_cells.view([-1, 2]), homographies, device)
-    #     warped_coor_cells = normPts(coor_cells.view([-1, 2]), shape)
-    #     warped_coor_cells = torch.stack((warped_coor_cells[:,1], warped_coor_cells[:,0]), dim=1) # (y, x) to (x, y)
-    #     warped_coor_cells = warp_points(warped_coor_cells, homographies, device)
-
-    #     warped_coor_cells = torch.stack((warped_coor_cells[:, :, 1], warped_coor_cells[:, :, 0]), dim=2)  # (batch, x, y) to (batch, y, x)
-
-    #     shape_cell = torch.tensor([H//cell_size, W//cell_size]).type(torch.FloatTensor).to(device)
-    #     # warped_coor_mask = denormPts(warped_coor_cells, shape_cell)
-
-    #     warped_coor_cells = denormPts(warped_coor_cells, shape)
-    #     # warped_coor_cells = warped_coor_cells.view([-1, 1, 1, Hc, Wc, 2])
-    #     warped_coor_cells = warped_coor_cells.view([-1, Hc, Wc, 1, 1, 2])
-    # #     print("warped_coor_cells: ", warped_coor_cells.shape)
-    #     # compute the pairwise distance
-    #     cell_distances = coor_cells - warped_coor_cells
-    #     cell_distances = torch.norm(cell_distances, dim=-1)
-    #     ##### check
-    # #     print("descriptor_dist: ", descriptor_dist)
-    #     mask = cell_distances <= descriptor_dist # 0.5 # trick
-
-    #     mask = mask.type(torch.FloatTensor).to(device)
-
+    valid_mask = valid_mask1 @ valid_mask2.t()
+    grid1 = keypoints_to_grid(cells1, [H,W])
+    grid2 = keypoints_to_grid(cells2, [H,W])
+    desc1 = F.grid_sample(desc_pred1, grid1).permute(
+        0, 2, 3, 1).reshape(b_size * n_points, -1)
+    desc1 = F.normalize(desc1, dim=1)
+    desc2 = F.grid_sample(desc_pred2, grid2).permute(
+        0, 2, 3, 1).reshape(b_size * n_points, -1)
+    desc2 = F.normalize(desc2, dim=1)
+    # desc1 = grid_ptsdesc(desc_pred1, cells1, H, W)
+    # desc2 = grid_ptsdesc(desc_pred2, cells2, H, W)
     # compute the pairwise dot product between descriptors: d^t * d
-    descriptors1 = desc_pred1.transpose(1, 2).transpose(2, 3)
-    descriptors1 = desc_pred1.view((batch_size, Hc, Wc, 1, 1, -1))
-    descriptors2 = desc_pred2.transpose(1, 2).transpose(2, 3)
-    descriptors2 = desc_pred2.view((batch_size, 1, 1, Hc, Wc, -1))
-    dot_product_desc = descriptors1 * descriptors2
-    dot_product_desc = dot_product_desc.sum(dim=-1)
+    # descriptors1 = desc_pred1.transpose(1, 2).transpose(2, 3)
+    # descriptors1 = desc_pred1.view((batch_size, Hc, Wc, 1, 1, -1))
+    # descriptors2 = desc_pred2.transpose(1, 2).transpose(2, 3)
+    # descriptors2 = desc_pred2.view((batch_size, 1, 1, Hc, Wc, -1))
+    # dot_product_desc = descriptors1 * descriptors2
+    dot_product_desc = desc1 @ desc2.t()
     ## dot_product_desc.shape = [batch_size, Hc, Wc, Hc, Wc, desc_len]
 
     # hinge loss
@@ -331,19 +323,17 @@ def pointdesc_loss(desc_pred1, desc_pred2, mask, mask_valid=None,
     negative_dist = torch.max(dot_product_desc - margin_neg, torch.tensor(0.).to(device))
     # negative_dist[neative_dist < 0] = 0
     # sum of the dimension
-
-    if mask_valid is None:
         # mask_valid = torch.ones_like(mask)
-        mask_valid = torch.ones(batch_size, 1, Hc*cell_size, Wc*cell_size)
-    mask_valid = mask_valid.view(batch_size, 1, 1, mask_valid.shape[2], mask_valid.shape[3])
+    mask_S = torch.eye(batch_size*Hc*Wc).to(device)
+    # mask_valid = mask_valid.view(batch_size, 1, 1, mask_valid.shape[2], mask_valid.shape[3])
 
-    loss_desc = lamda_d * mask * positive_dist + (1 - mask) * negative_dist
-    loss_desc = loss_desc * mask_valid
+    loss_desc = lamda_d * mask_S * valid_mask * positive_dist + (1 - mask_S) * valid_mask * negative_dist
+    # loss_desc = loss_desc * cells_mask
         # mask_validg = torch.ones_like(mask)
     ##### bug in normalization
-    normalization = (batch_size * (mask_valid.sum()+1) * Hc * Wc)
-    pos_sum = (lamda_d * mask * positive_dist/normalization).sum()
-    neg_sum = ((1 - mask) * negative_dist/normalization).sum()
+    normalization = (batch_size * Hc*Wc*Hc*Wc)
+    # pos_sum = (lamda_d * mask * positive_dist/normalization).sum()
+    # neg_sum = ((1 - mask) * negative_dist/normalization).sum()
     loss_desc = loss_desc.sum() / normalization
     # loss_desc = loss_desc.sum() / (batch_size * Hc * Wc)
     # return loss_desc, mask, mask_valid, positive_dist, negative_dist
@@ -382,7 +372,7 @@ def triplet_loss(desc_pred1, desc_pred2, points1, points2, line_indices,
 
     # Extract the descriptors
     desc1 = F.grid_sample(desc_pred1, grid1).permute(
-        0, 2, 3, 1).reshape(b_size * n_points, -1)[valid_points]
+        0, 2, 3, 1).reshape(b_size * n_points, -1)[valid_points]    #[4,128,64,64] [4,1000,1,2]
     desc1 = F.normalize(desc1, dim=1)
     desc2 = F.grid_sample(desc_pred2, grid2).permute(
         0, 2, 3, 1).reshape(b_size * n_points, -1)[valid_points]
@@ -415,19 +405,46 @@ class TripletDescriptorLoss(nn.Module):
         self.margin = margin
 
     def forward(self, desc_pred1, desc_pred2, points1,
-                points2, line_indices, epoch):
+                points2, line_indices, epoch, 
+                cells1, cells2, mask1, mask2):
         return self.descriptor_loss(desc_pred1, desc_pred2, points1,
                                     points2, line_indices, epoch)
 
     # The descriptor loss based on regularly sampled points along the lines
     def descriptor_loss(self, desc_pred1, desc_pred2, points1,
                         points2, line_indices, epoch):
-        pointdesc_loss = pointdesc_loss()
         linedesc_loss = torch.mean(triplet_loss(
             desc_pred1, desc_pred2, points1, points2, line_indices, epoch,
             self.grid_size, self.dist_threshold, self.init_dist_threshold,
             self.margin)[0])
-        return pointdesc_loss+linedesc_loss
+        return linedesc_loss, 0
+
+class PLTripletDescriptorLoss(nn.Module):
+    """ Triplet descriptor loss. """
+    def __init__(self, grid_size, dist_threshold, margin):
+        super(PLTripletDescriptorLoss, self).__init__()
+        self.grid_size = grid_size
+        self.init_dist_threshold = 64
+        self.dist_threshold = dist_threshold
+        self.margin = margin
+
+    def forward(self, desc_pred1, desc_pred2, points1,
+                points2, line_indices, epoch, 
+                cells1, cells2, mask1, mask2):
+        return self.descriptor_loss(desc_pred1, desc_pred2, points1,
+                                    points2, line_indices, epoch, 
+                                    cells1, cells2, mask1, mask2)
+
+    # The descriptor loss based on regularly sampled points along the lines
+    def descriptor_loss(self, desc_pred1, desc_pred2, points1,
+                        points2, line_indices, epoch, cells1, cells2, mask1, mask2):
+        ptsdesc_loss = pointdesc_loss(desc_pred1, desc_pred2, cells1, cells2,
+                                             self.grid_size, mask1, mask2)
+        linedesc_loss = torch.mean(triplet_loss(
+            desc_pred1, desc_pred2, points1, points2, line_indices, epoch,
+            self.grid_size, self.dist_threshold, self.init_dist_threshold,
+            self.margin)[0])
+        return linedesc_loss, ptsdesc_loss
         
 
 
@@ -490,7 +507,7 @@ class TotalLoss(nn.Module):
             junc_map_target2, heatmap_pred1, heatmap_pred2, heatmap_target1,
             heatmap_target2, line_points1, line_points2, line_indices,
             desc_pred1, desc_pred2, epoch, valid_mask1=None,
-            valid_mask2=None):
+            valid_mask2=None, cells1=None, cells2=None, cells_mask1=None, cells_mask2=None):
         """ Loss for detection + description. """
         # Compute junction loss
         junc_loss = self.loss_funcs["junc_loss"](
@@ -517,9 +534,9 @@ class TotalLoss(nn.Module):
             w_heatmap = self.loss_weights["w_heatmap"]
 
         # Compute the descriptor loss
-        descriptor_loss = self.loss_funcs["descriptor_loss"](
+        line_descriptor_loss, point_descriptor_loss = self.loss_funcs["descriptor_loss"](
             desc_pred1, desc_pred2, line_points1,
-            line_points2, line_indices, epoch)
+            line_points2, line_indices, epoch, cells1, cells2, cells_mask1, cells_mask2)
         # Get descriptor loss weight (dynamic or not)
         if isinstance(self.loss_weights["w_desc"], nn.Parameter):
             w_descriptor = torch.exp(-self.loss_weights["w_desc"])
@@ -529,7 +546,7 @@ class TotalLoss(nn.Module):
         # Update the total loss
         total_loss = (junc_loss * w_junc
                       + heatmap_loss * w_heatmap
-                      + descriptor_loss * w_descriptor)
+                      + (line_descriptor_loss+0.01*point_descriptor_loss) * w_descriptor)
         outputs = {
             "junc_loss": junc_loss,
             "heatmap_loss": heatmap_loss,
@@ -537,7 +554,9 @@ class TotalLoss(nn.Module):
                 if isinstance(w_junc, nn.Parameter) else w_junc,
             "w_heatmap": w_heatmap.item() \
                 if isinstance(w_heatmap, nn.Parameter) else w_heatmap,
-            "descriptor_loss": descriptor_loss,
+            "line_descriptor_loss": line_descriptor_loss,
+            "point_descriptor_loss": point_descriptor_loss,
+            "descriptor_loss": line_descriptor_loss+ point_descriptor_loss,
             "w_desc": w_descriptor.item() \
                 if isinstance(w_descriptor, nn.Parameter) else w_descriptor
         }

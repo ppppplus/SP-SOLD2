@@ -30,7 +30,7 @@ def wireframe_collate_fn(batch):
     """ Customized collate_fn for wireframe dataset. """
     batch_keys = ["image", "junction_map", "valid_mask", "heatmap",
                   "heatmap_pos", "heatmap_neg", "homography",
-                  "line_points", "line_indices"]
+                  "line_points", "line_indices", "cells", "cells_mask"]
     list_keys = ["junctions", "line_map", "line_map_pos",
                  "line_map_neg", "file_key"]
 
@@ -379,48 +379,65 @@ class WireframeDataset(Dataset):
 
         return homographic_trans
     
-    def get_pt_cells(self, img_size, homographies, descriptor_dist, numpy):
+    def normPts(self, pts, shape):
+        """
+        normalize pts to [-1, 1]
+        :param pts:
+            tensor (y, x)
+        :param shape:
+            tensor shape (y, x)
+        :return:
+        """
+        pts = pts/shape*2 - 1
+        return pts
+
+    def denormPts(self, pts, shape):
+        """
+        denormalize pts back to H, W
+        :param pts:
+            tensor (y, x)
+        :param shape:
+            numpy (y, x)
+        :return:
+        """
+        pts = (pts+1)*shape/2
+        return pts
+
+    def get_warped_cells(self, img_size, H1=None, H2=None, valid_mask=None):
+        # get cell center points
         cell_size = self.config["grid_size"]
         H, W = img_size
         Hc, Wc = int(H/cell_size), int(W/cell_size)
-        #####
-        # H, W = Hc.numpy().astype(int) * cell_size, Wc.numpy().astype(int) * cell_size
-        # H, W = Hc * cell_size, Wc * cell_size
-        #####
-        if not numpy:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            with torch.no_grad():
-                shape = torch.tensor([H, W]).type(torch.FloatTensor).to(device)
-                # compute the center pixel of every cell in the image
-
-                coor_cells = torch.stack(torch.meshgrid(torch.arange(Hc), torch.arange(Wc)), dim=2)
-                coor_cells = coor_cells.type(torch.FloatTensor).to(device)
-                coor_cells = coor_cells * cell_size + cell_size // 2
-                ## coord_cells is now a grid containing the coordinates of the Hc x Wc
-                ## center pixels of the 8x8 cells of the image
-
-                # coor_cells = coor_cells.view([-1, Hc, Wc, 1, 1, 2])
-                coor_cells = coor_cells.view([-1, 1, 1, Hc, Wc, 2])  # be careful of the order
-                warped_coor_cells = self.normPts(coor_cells.view([-1, 2]), shape)
-                warped_coor_cells = torch.stack((warped_coor_cells[:,1], warped_coor_cells[:,0]), dim=1) # (y, x) to (x, y)
-                warped_coor_cells = warp_points(warped_coor_cells, homographies, device)
-
-                warped_coor_cells = torch.stack((warped_coor_cells[:, :, 1], warped_coor_cells[:, :, 0]), dim=2)  # (batch, x, y) to (batch, y, x)
-
-                shape_cell = torch.tensor([H//cell_size, W//cell_size]).type(torch.FloatTensor).to(device)
-                # warped_coor_mask = denormPts(warped_coor_cells, shape_cell)
-
-                warped_coor_cells = self.denormPts(warped_coor_cells, shape)
-                # warped_coor_cells = warped_coor_cells.view([-1, 1, 1, Hc, Wc, 2])
-                warped_coor_cells = warped_coor_cells.view([-1, Hc, Wc, 1, 1, 2])
-                # compute the pairwise distance
-                cell_distances = coor_cells - warped_coor_cells
-                cell_distances = torch.norm(cell_distances, dim=-1)
-               
-                mask = cell_distances <= descriptor_dist # 0.5 # trick
-
-                mask = mask.type(torch.FloatTensor).to(device)
-        return mask
+        # compute the center pixel of every cell in the image
+        coor_cells = np.stack(np.meshgrid(np.arange(Hc), np.arange(Wc)), axis=2)
+        coor_cells = coor_cells.astype(np.float32)
+        coor_cells = coor_cells * cell_size + cell_size // 2
+        coor_cells = coor_cells.reshape([-1,2])
+        if H2 is not None:
+            # H2 exists, now we need think of both paired mask
+            warped_coor_cells = warp_points(coor_cells, H1)
+            warped_coor_cells2 = warp_points(coor_cells, H2)
+            mask = mask_points(warped_coor_cells, img_size)
+            mask2 = mask_points(warped_coor_cells2, img_size)
+            cells_mask = mask * mask2
+        else:
+            warped_coor_cells = warp_points(coor_cells, H1)
+            cells_mask = mask_points(warped_coor_cells, img_size)
+        warped_coor_cells[~cells_mask] = [-1, -1]
+        warped_coor_cells = warped_coor_cells.astype(np.int32)
+        scale_mask = np.zeros(Hc*Wc)
+        if valid_mask is not None:
+            for i in range(Hc*Wc):
+                if warped_coor_cells[i,0] != -1:
+                    scale_mask[i] = valid_mask[warped_coor_cells[i,0], warped_coor_cells[i,1]]
+                else:
+                    scale_mask[i] = 1
+            # warped_coor_cells = warped_coor_cells[cells_mask]
+            cells_mask = cells_mask.astype(np.int32) * scale_mask
+        # warped_coor_cells = np.concatenate(
+        #     [warped_coor_cells,
+        #      np.zeros((Hc*Wc-len(warped_coor_cells), 2), dtype=float)], axis=0)
+        return warped_coor_cells, cells_mask
 
     def get_line_points(self, junctions, line_map, H1=None, H2=None,
                         img_size=None, warp=False):
@@ -704,14 +721,12 @@ class WireframeDataset(Dataset):
             # Give the warp of the other view
             if H1 is None:
                 H1 = homo_outputs["homo"]
-
         # Sample points along each line segments for the descriptor
         if desc_training:
             line_points, line_indices = self.get_line_points(
                 junctions, line_map, H1=H1, H2=H2,
                 img_size=image_size, warp=warp)
-            ptdesc_mask = self.get_pt_cells(img_size=image_size, homographies=H1, descriptor_dist=4, numpy=numpy)
-
+            
         # Record the warped results
         if warp:
             junctions = homo_outputs["junctions"]  # Should be HW format
@@ -726,6 +741,9 @@ class WireframeDataset(Dataset):
                     homography_mat).to(torch.float32)[0, ...]
             else:
                 outputs["homography_mat"] = homography_mat.astype(np.float32)
+
+        if desc_training:
+            warped_cells, cells_mask = self.get_warped_cells(img_size=image_size, H1=H1, H2=H2, valid_mask=valid_mask)
 
         junction_map = self.junc_to_junc_map(junctions, image_size)
         
@@ -744,7 +762,8 @@ class WireframeDataset(Dataset):
                         line_points).to(torch.float32)[0],
                     "line_indices": torch.tensor(line_indices,
                                                  dtype=torch.int),
-                    "ptdesc_mask": ptdesc_mask
+                    "cells": to_tensor(warped_cells).to(torch.int32),
+                    "cells_mask":  torch.tensor(cells_mask, dtype=torch.float32)
                 })
         else:
             outputs.update({
@@ -759,7 +778,8 @@ class WireframeDataset(Dataset):
                 outputs.update({
                     "line_points": line_points.astype(np.float32),
                     "line_indices": line_indices.astype(int),
-                    "ptdesc_mask": ptdesc_mask.astype(bool)
+                    "cells": warped_cells.astype(np.int32),
+                    "cells_mask": cells_mask.astype(np.int32)
                 })
         
         return outputs

@@ -9,10 +9,10 @@ descriptor_decoder: superpoint_descriptor
 descriptor_decoder_cfg: null
 descriptor_loss_cfg:
   dist_threshold: 8
-  grid_size: 4
+  grid_size: 8
   margin: 1
   policy: dynamic
-descriptor_loss_func: regular_sampling
+descriptor_loss_func: pl_sampling
 detection_thresh: 0.0153846
 disp_freq: 100
 epochs: 130
@@ -35,11 +35,11 @@ model_name: superpoint_simple
 prob_thresh: 0.5
 summary_freq: 1
 test:
-  batch_size: 12
-  num_workers: 8
+  batch_size: 4
+  num_workers: 1
 train:
-  batch_size: 12
-  num_workers: 8
+  batch_size: 4
+  num_workers: 1
 w_desc: 0.0
 w_heatmap: 0.0
 w_heatmap_class: 1

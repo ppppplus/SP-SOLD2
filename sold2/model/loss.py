@@ -544,8 +544,8 @@ class TotalLoss(nn.Module):
             w_descriptor = self.loss_weights["w_desc"]
 
         # Update the total loss
-        total_loss = (junc_loss * w_junc
-                      + heatmap_loss * w_heatmap
+        total_loss = (0.01*junc_loss * w_junc
+                      + 0.01*heatmap_loss * w_heatmap
                       + (line_descriptor_loss+0.01*point_descriptor_loss) * w_descriptor)
         outputs = {
             "junc_loss": junc_loss,

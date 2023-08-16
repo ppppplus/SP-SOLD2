@@ -8,20 +8,20 @@
             "name": "Python: Current File",
             "type": "python",
             "request": "launch",
-            "module": "sold2.experiment",
+            // "module": "sold2.experiment",
             // "module": "sold2.postprocess.convert_homography_results",
 
             "cwd": "${workspaceFolder}",
-            // "program": "${file}",
+            "program": "${file}",
             "console": "integratedTerminal",
             "justMyCode": true,
-            "args": ["--mode", "train",
-            "--dataset_config", "sold2/config/wireframe_dataset.yaml",
-            "--model_config", "sold2/config/train_full_pipeline.yaml",
-            "--exp_name", "sp-sold2_full_wireframe",
-            "--pretrained",
-            "--pretrained_path", "pretrained_models/sold2_wireframe",
-            "--checkpoint_name", "sp-sold2-detect.tar"]
+            // "args": ["--mode", "train",
+            // "--dataset_config", "sold2/config/wireframe_dataset.yaml",
+            // "--model_config", "sold2/config/train_full_pipeline.yaml",
+            // "--exp_name", "sp-sold2_full_wireframe",
+            // "--pretrained",
+            // "--pretrained_path", "pretrained_models/sold2_wireframe",
+            // "--checkpoint_name", "sp-sold2-detect.tar"]
         }
     ]
 }
